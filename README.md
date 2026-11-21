@@ -50,6 +50,7 @@ Aksharantar (native words): 37.72
   - [Accessing on ULCA](#accessing-on-ulca)
 - [Running inference](#running-inference)
   - [Command line interface](#command-line-interface)
+  - [Marathi to English transliteration](#marathi-to-english-transliteration)
   - [Python interface](#python-interface)
 - [Training model](#training-model)
   - [Setting up your environment](#setting-up-your-environment)
@@ -122,6 +123,44 @@ Follow the Colab notebook to setup the environment, download the trained _IndicX
 
 <!-- colab integratation on running the model on custom input cli script -->
 Command line interface --> [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1GFlqA7fpA2LLKJXtbtXSe-DqrAshuB-L?usp=sharing)
+
+### Marathi to English transliteration
+
+The Marathi to English direction transliterates Devanagari text into Roman
+English characters. For example:
+
+```text
+मराठी -> marathi
+नमस्कार -> namaskar
+महाराष्ट्र -> maharashtra
+```
+
+On Windows, activate the project virtual environment and run:
+
+```powershell
+.\.venv\Scripts\python.exe -u .\marathi_beam_search.py "नमस्कार महाराष्ट्र" `
+  --direction marathi-to-roman --beam 5 --nbest 3
+```
+
+The web interface can transliterate Marathi text in the browser:
+
+```powershell
+.\.venv\Scripts\python.exe -u .\translit_page.py
+```
+
+Then open `http://127.0.0.1:8080`.
+
+- `--direction marathi-to-roman` selects Marathi Devanagari to English Roman.
+- `--beam` controls the size of the Fairseq search beam.
+- `--nbest` controls how many ranked candidates are displayed.
+- Input words are processed separately by the command-line launcher.
+
+The Marathi to English checkpoint and Fairseq dictionaries are loaded from:
+
+```text
+models/indic-en/transformer/indicxlit.pt
+models/indic-en/corpus-bin/
+```
 
 ### Python interface
 <!-- colab integratation on running the model on custom input python script -->
