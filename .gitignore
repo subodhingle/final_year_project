@@ -132,3 +132,6 @@ dmypy.json
 
 *.pt
 *.zip
+
+# PostgreSQL local credentials (keep secrets out of git)
+db_config.json

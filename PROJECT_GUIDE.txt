@@ -1,0 +1,618 @@
+================================================================================
+ IndicXlit - Marathi Transliteration: Project Guide
+ How the files work, how to run the project, and how to train the model again
+================================================================================
+
+This guide explains:
+  Part A  - What this project is and what each important file/folder does.
+  Part B  - The Python environment (and the GPU setup that was done here).
+  Part C  - How to run transliteration (the web page and the command line).
+  Part D  - The model architecture and training hyperparameters.
+  Part E  - How to TRAIN the model again from scratch.
+  Part F  - How to FINETUNE on your own Marathi data (recommended for most users).
+  Part G  - Important fixes and caveats you must know.
+
+Keep this file in the project root:  e:\indicxlict\PROJECT_GUIDE.txt
+
+
+================================================================================
+ PART A - WHAT THE PROJECT IS AND WHAT EACH FILE DOES
+================================================================================
+
+IndicXlit (by AI4Bharat / IIT Madras) is a transformer-based multilingual
+transliteration model (~11M parameters, 21 Indic languages). It converts:
+  - Roman  -> Indic script   (English spelling -> Devanagari/etc.)  model: en-indic
+  - Indic  -> Roman script    (Devanagari/etc. -> English spelling)  model: indic-en
+
+This workspace is set up for MARATHI. Marathi uses language code "mr" and the
+Devanagari script (Unicode range U+0900-U+097F).
+
+The two trained checkpoints already in this project:
+  models\en-indic\transformer\indicxlit.pt   -> Roman to Marathi (en->mr)
+  models\indic-en\transformer\indicxlit.pt   -> Marathi to Roman (mr->en)  <-- YOUR USE CASE
+  models\en-indic\corpus-bin\                -> Fairseq dictionaries for en-indic
+  models\indic-en\corpus-bin\               -> Fairseq dictionaries for indic-en
+  models\*\corpus-bin\dict.<lang>.txt       -> character vocabularies (one per language)
+  inference\cli\*\lang_list.txt             -> list of language codes the model knows
+
+Key files and folders:
+
+  marathi_beam_search.py        Command-line launcher. You give it text, a
+                                direction, beam width and nbest; it calls
+                                Fairseq's beam decoder and prints the ranked
+                                candidates with scores. (Marathi-only friendly.)
+
+  translit_page.py              [ADDED HERE] A small local web page. Load the
+                                trained Marathi->Roman model once into memory
+                                and transliterate pasted text in the browser.
+                                Uses only the Python standard library + fairseq.
+
+  subodh_trial_csv.csv          Sample data: Marathi village/district names with
+                                their English romanizations. Good test inputs.
+
+  setup_windows.ps1             Creates the .venv (Python 3.10, fairseq 0.12.2).
+  setup_wsl.sh                   Same for WSL/Linux.
+  MARATHI_SETUP.md               Short setup/usage notes (pre-existing).
+
+  models\                       The trained checkpoints + Fairseq dictionaries.
+  inference\cli\en-indic\        Shell scripts to run Roman->Marathi inference.
+    interactive.sh                fairseq-interactive command (en->X, langtok tgt)
+    transliterate_word.sh          wraps interactive.sh + result formatting
+    lang_list.txt
+  inference\cli\indic-en\        Shell scripts to run Marathi->Roman inference.
+    interactive.sh                fairseq-interactive command (X->en, langtok src)
+    lang_list.txt
+  inference\python\              Python (in-process) inference code.
+    custom_interactive.py          the Transliterator class (loads model once,
+                                   beam search in memory) - reused by the page.
+    xlit_translit.py               higher-level wrapper with rescoring.
+
+  app\                          The upstream AI4Bharat transliteration web app
+    ai4bharat\transliteration\      (Flask server). Not required for our page.
+      transformer\
+        base_engine.py             base engine (normalization, pre/post process)
+        indic2en.py                Indic->English engine (auto-downloads model)
+        en2indic.py                 English->Indic engine
+        custom_interactive.py       the in-process Transliterator (same as above)
+    start_server.py                Flask+gevent server entry point
+
+  model_training_scripts\       Scripts to prepare data, train, generate, evaluate.
+    data_filtration\
+      refresh_data_train_all_test_valid.py  normalize + filter raw data into
+                                            train/valid/test per language
+      refresh_test_valid_data.py
+    vocab_creation\preprocess.sh   build the joint character vocabulary
+    binarizing\preprocess_all_lang.sh  binarize each language's data with the
+                                       joint vocab (-> corpus-bin)
+    training\train.sh             fairseq-train command + hyperparameters
+    generation\generate.sh        fairseq-generate on the test set
+    evaluate\final_result_without_rescoring.sh  compute accuracy from outputs
+    evaluate\evaluate_result_with_rescore_option.py  the accuracy evaluator
+
+  corpus_preprocessing\        Scripts used to build the Aksharantar corpus.
+  data_mining\                  Scripts to mine transliteration pairs from
+                                IndicCorp / Samanantar (only if you need MORE data).
+  Dataset_Format\Create_Aksharantar_JSONL.py  convert dataset to Aksharantar JSONL.
+  ablation_study\               Reproduction/ablation experiments (data filtration
+                                variants, multilingual/monolingual/north/south).
+
+  README.md                     Upstream IndicXlit README (training + eval docs).
+  PROJECT_GUIDE.txt             <-- THIS FILE.
+
+
+================================================================================
+ PART B - THE PYTHON ENVIRONMENT (and the GPU setup)
+================================================================================
+
+Use the project virtual environment, NOT the system Python:
+
+  Python :  e:\indicxlict\.venv\Scripts\python.exe   (Python 3.10.11)
+  Has    :  fairseq 0.12.2, torch, indic-nlp-library
+  GPU    :  NVIDIA GeForce RTX 3050 Laptop GPU, CUDA 12.4 driver
+
+NOTE ON TORCH (important):
+  The original setup_windows.ps1 installs CPU-only torch (torch==2.0.1+cpu).
+  In this workspace torch was upgraded to the CUDA build so the model runs on
+  the GPU:
+      torch 2.0.1+cu118
+  It is the SAME patch version (2.0.1), just the CUDA variant, so it stays
+  compatible with fairseq 0.12.2. The CUDA 11.8 runtime works on the 12.4 driver.
+
+  To RECREATE this venv from scratch (CPU, as the project ships):
+      powershell -ExecutionPolicy Bypass -File .\setup_windows.ps1
+  To ADD GPU support afterwards (what was done here):
+      .\.venv\Scripts\python.exe -m pip install torch==2.0.1+cu118 ^
+          --index-url https://download.pytorch.org/whl/cu118
+  To go BACK to CPU torch:
+      .\.venv\Scripts\python.exe -m pip install torch==2.0.1+cpu ^
+          --index-url https://download.pytorch.org/whl/cpu
+
+How to verify the environment:
+      .\.venv\Scripts\python.exe -c "import torch,fairseq; print(torch.__version__, torch.cuda.is_available(), fairseq.__version__)"
+
+GPU quirk on this Windows machine:
+  nvidia-smi --query-compute-apps CANNOT see GPU processes on this box (WDDM
+  underreporting). So "no process on GPU" from nvidia-smi does NOT mean the model
+  is on CPU. The reliable check is in Python:
+      next(model.parameters()).is_cuda   -> True means the model is on the GPU.
+  Fairseq puts the model on CUDA automatically because torch.cuda.is_available()
+  is True and fairseq's config flag cpu=False. (See Part G.)
+
+
+================================================================================
+ PART C - HOW TO RUN TRANSLITERATION (inference)
+================================================================================
+
+There are three ways. The web page is the easiest.
+
+------------------------------------------------------------------------------
+C1. The web page (translit_page.py)   <-- easiest, recommended for manual use
+------------------------------------------------------------------------------
+Loads the Marathi->Roman model ONCE into memory on the GPU, then serves a
+browser page. Paste Marathi (Devanagari) text, choose beam width and Top-N,
+click Transliterate, get the Roman spelling + per-word candidate probabilities.
+
+Start it (from the project root):
+      .\.venv\Scripts\python.exe -u .\translit_page.py
+Then open in a browser:    http://127.0.0.1:8080
+
+How it works (briefly):
+  - It imports the in-process Transliterator from
+    app\ai4bharat\transliteration\transformer\custom_interactive.py and points it
+    at YOUR checkpoint  models\indic-en\transformer\indicxlit.pt
+    with the dictionaries in models\indic-en\corpus-bin and lang_list.txt.
+  - It restricts to Marathi: lang_pairs = "mr-en" and prepends the "__mr__"
+    source-language token to each word (this is what Fairseq's
+    --encoder-langtok src does for indic->en).
+  - Marathi text is split into Devanagari word runs; each word is lowercased and
+    space-joined into characters (the model is character-level), then decoded
+    with beam search. Digits (0-9) and the danda full-stop (.) pass through.
+  - Beam width is fixed when the model is loaded (Fairseq builds the beam
+    generator at load time). The first request at a new beam width loads it
+    (~2-5 s on GPU), then it is cached. Top-N (nbest) is chosen per request.
+  - Uses ONLY the Python standard library http.server (no Flask needed).
+
+Controls on the page:
+  - Beam width  (1-10)        how many partial sequences the search explores
+  - Top-N (1..beam)          how many ranked candidates to show per word
+  - Output box               full transliteration (best candidate per word)
+  - Candidate table          per-word top-N with model probability
+
+To use the OTHER direction (Roman -> Marathi) on a page, the simplest is to
+point the script at the en-indic checkpoint and use lang_pairs "en-mr" with the
+"__mr__" TARGET token (langtok tgt). Ask if you want this added as a toggle.
+
+------------------------------------------------------------------------------
+C2. The command-line launcher (marathi_beam_search.py)
+------------------------------------------------------------------------------
+Marathi -> Roman:
+      .\.venv\Scripts\python.exe -u .\marathi_beam_search.py "आडगाव रावेर बीड" ^
+          --direction marathi-to-roman --beam 5 --nbest 3
+
+Roman -> Marathi:
+      .\.venv\Scripts\python.exe -u .\marathi_beam_search.py "Aadgaon Raver" ^
+          --direction roman-to-marathi --beam 5 --nbest 3
+
+Flags:
+  --direction   marathi-to-roman | roman-to-marathi
+  --beam        beam width (partial sequences explored)        default 10
+  --nbest       number of ranked candidates returned (<= beam) default 5
+Always run it with -u (unbuffered) so output flushes under Windows PowerShell.
+
+How it works:
+  - Splits the input on whitespace into words.
+  - For each word, space-joins the characters (char-level input the model expects).
+  - Runs fairseq-interactive (via subprocess) with the correct per-direction
+    language token:
+       marathi-to-roman : --source-lang mr --target-lang en --encoder-langtok src
+       roman-to-marathi : --source-lang en --target-lang mr --encoder-langtok tgt
+  - Parses the "H-<id>" hypothesis lines and prints each candidate + score.
+
+Caveat: it transliterates each whitespace-separated token SEPARATELY. For a
+multi-word name like "आभोडा बुद्रुक" it returns two transliterations, not one.
+For full-name/sentence handling, use the web page (it reassembles words in place).
+
+------------------------------------------------------------------------------
+C3. Direct Fairseq (the shell scripts) - Linux/WSL/Git-Bash
+------------------------------------------------------------------------------
+Prepare a UTF-8 input file, one word per line, with space-separated characters.
+Example input_mr.txt:
+      र ा व े र
+      आ ड ग ा व
+
+Marathi -> Roman (from the project root):
+      cd inference\cli\indic-en
+      mkdir -p output
+      fairseq-interactive "..\..\..\models\indic-en\corpus-bin" ^
+        --path "..\..\..\models\indic-en\transformer\indicxlit.pt" ^
+        --task translation_multi_simple_epoch ^
+        --beam 5 --nbest 1 ^
+        --source-lang mr --target-lang en ^
+        --encoder-langtok src --lang-dict lang_list.txt ^
+        --lang-pairs as-en,bn-en,brx-en,gom-en,gu-en,hi-en,kn-en,ks-en,mai-en,ml-en,mni-en,mr-en,ne-en,or-en,pa-en,sa-en,sd-en,si-en,ta-en,te-en,ur-en ^
+        --input "..\..\..\input_mr.txt" > output\mr_en.txt
+
+(On Windows PowerShell use a single line, or use the launcher in C2 which does
+this for you. The "^" line-continuation is for cmd; in bash use "\".)
+
+The output "H-" lines are:  H-<id>\t<score>\t<space-separated chars>. Join the
+chars (remove spaces) to get the word. "D-" lines are the same, decoded.
+
+
+================================================================================
+ PART D - MODEL ARCHITECTURE AND TRAINING HYPERPARAMETERS
+================================================================================
+
+From the IndicXlit paper (section 6) and this repo's training\train.sh:
+
+  Architecture   : Transformer (6 encoder + 6 decoder layers)
+  Embeddings     : 256 dim, 4 attention heads, feedforward 1024  -> ~11M params
+  Layer norm     : --layernorm-embedding, --encoder-normalize-before,
+                   --decoder-normalize-before, activation gelu
+  Loss          : Cross-Entropy
+  Optimizer     : Adam, betas (0.9, 0.98)
+  LR            : 0.001, inverse-sqrt scheduler, warmup 4000 steps, init-lr 0
+  Dropout       : 0.5
+  Batch size    : 1024 (tokens)
+  Sampling      : temperature sampling, T=1.5 (multilingual data balancing)
+  Max epochs    : 51
+  Task          : translation_multi_simple_epoch (multilingual, with lang tokens)
+  Language token: prepended to the encoder input via --encoder-langtok
+                   tgt  for en->Indic   (tells model which Indic lang to output)
+                   src  for Indic->en   (tells model which Indic lang the input is)
+
+Dataset: Aksharantar (26M word pairs across 20 Indic languages) + mined data.
+
+
+================================================================================
+ PART E - HOW TO TRAIN THE MODEL AGAIN FROM SCRATCH
+================================================================================
+
+Training is done with Fairseq. The scripts in model_training_scripts\ are bash
+(run them in WSL / Linux / Git-Bash on a GPU machine). On Windows you can also
+run the equivalent fairseq commands directly with the venv's fairseq
+(.venv\Scripts\fairseq-train.exe or  python -m fairseq_cli.train), but bash is
+easier for the loop scripts.
+
+The pipeline has 5 stages:
+   1. Prepare raw parallel data  ->  corpus\<split>_<lang>.<lang> / .en
+   2. Build a joint character vocabulary  ->  corpus-bin\dict.*.txt
+   3. Binarize each language's data with that vocabulary  ->  corpus-bin\*.bin
+   4. Train with fairseq-train  ->  transformer\checkpoint_best.pt
+   5. Generate + evaluate  ->  accuracies
+
+IMPORTANT - which direction are you training?
+   - To (re)train the Marathi->Roman model (YOUR use case, models\indic-en):
+       source/target are reversed:  source-lang = mr, target-lang = en,
+       --encoder-langtok src,  --lang-pairs <each>-en  (e.g. mr-en, or all X-en).
+   - To (re)train the Roman->Marathi model (models\en-indic):
+       source-lang = en, target-lang = mr,
+       --encoder-langtok tgt,  --lang-pairs en-<each>  (e.g. en-mr, or all en-X).
+   The repo's train.sh is written for en->Indic (Roman->Marathi). For Marathi->
+   Roman you mirror it with src/tgt and langtok swapped (see E4 below).
+
+----------------------------------------------------------------- E1. DATA
+The model is CHARACTER-level. Training files are plain UTF-8 text, one word per
+line, with each character separated by a space:
+   train_mr.mr  :  "र ा व े र"   (Marathi word, chars space-separated)
+   train_mr.en  :  "r a v e r"   (matching Roman word, chars space-separated)
+   valid_mr.mr / valid_mr.en , test_mr.mr / test_mr.en  : same format.
+
+Directory layout (the scripts expect):
+   corpus\
+     train_mr.mr   train_mr.en
+     valid_mr.mr    valid_mr.en
+     test_mr.mr     test_mr.en
+     ... (one pair of files per language if training multilingual)
+
+Where does the data come from?
+   - Aksharantar dataset (Huggingface: ai4bharat/Aksharantar) - the main source.
+   - This repo's model_training_scripts\data_filtration\refresh_data_train_all_test_valid.py
+     normalizes and filters raw data into train/valid/test. Usage:
+         python refresh_data_train_all_test_valid.py <lang_abr> <Language_name>
+     e.g. for Marathi:
+         python refresh_data_train_all_test_valid.py mr Marathi
+     It uses Indic normalizers and language-specific Unicode ranges
+     (Marathi = U+0900-U+097F) to drop bad lines, and combines data resources.
+   - For MORE Marathi pairs (e.g. your geographical names), mine from IndicCorp
+     or Samanantar (see data_mining\), or just create the train_mr.* files
+     directly from your own Marathi/Roman word list.
+
+For MARATHI-ONLY training, you only need the mr pair of files. For the full
+multilingual model (as shipped), you need all 21 language pairs.
+
+---------------------------------------------------------- E2. VOCABULARY
+Build a single joint vocabulary from the combined training data
+(model_training_scripts\vocab_creation\preprocess.sh):
+   fairseq-preprocess \
+     --trainpref corpus/train \
+     --source-lang en --target-lang mlt \
+     --workers 256 \
+     --destdir corpus-bin
+This creates corpus-bin\dict.en.txt and corpus-bin\dict.mlt.txt (the joint
+character vocab, here named "mlt"). For Marathi-only you can build the vocab
+from the Marathi data instead.
+
+---------------------------------------------------------- E3. BINARIZE
+Binarize each language's train/valid/test with the joint vocab
+(model_training_scripts\binarizing\preprocess_all_lang.sh):
+   for lang_abr in as bn brx gom gu hi kn ks mai ml mni mr ne or pa sa sd si ta te ur
+   do
+     fairseq-preprocess \
+       --trainpref corpus/train_$lang_abr --validpref corpus/valid_$lang_abr --testpref corpus/test_$lang_abr \
+       --srcdict corpus-bin/dict.en.txt \
+       --tgtdict corpus-bin/dict.mlt.txt \
+       --source-lang en --target-lang $lang_abr \
+       --workers 32 \
+       --destdir corpus-bin
+   done
+For Marathi-only, run the loop just for lang_abr=mr. Result: corpus-bin\*.bin
+files + dict.<lang>.txt that fairseq-train reads.
+
+Create lang_list.txt in the same folder, one language code per line (en, as, bn,
+... mr ...). The repo already has these in inference\cli\*\lang_list.txt.
+
+---------------------------------------------------------- E4. TRAIN
+The repo's training\train.sh (en->Indic, full multilingual, GPU):
+   CUDA_VISIBLE_DEVICES=0 fairseq-train corpus-bin \
+     --save-dir transformer/mymodel \
+     --arch transformer --layernorm-embedding \
+     --task translation_multi_simple_epoch \
+     --sampling-method "temperature" --sampling-temperature 1.5 \
+     --encoder-langtok "tgt" \
+     --lang-dict lang_list.txt \
+     --lang-pairs en-as,en-bn,en-brx,en-gom,en-gu,en-hi,en-kn,en-ks,en-mai,en-ml,en-mni,en-mr,en-ne,en-or,en-pa,en-sa,en-sd,en-si,en-ta,en-te,en-ur \
+     --decoder-normalize-before --encoder-normalize-before \
+     --activation-fn gelu --adam-betas "(0.9, 0.98)" \
+     --batch-size 1024 \
+     --decoder-attention-heads 4 --decoder-embed-dim 256 --decoder-ffn-embed-dim 1024 --decoder-layers 6 \
+     --dropout 0.5 \
+     --encoder-attention-heads 4 --encoder-embed-dim 256 --encoder-ffn-embed-dim 1024 --encoder-layers 6 \
+     --lr 0.001 --lr-scheduler inverse_sqrt \
+     --max-epoch 51 \
+     --optimizer adam --num-workers 32 \
+     --warmup-init-lr 0 --warmup-updates 4000
+
+On Windows (PowerShell, venv) the equivalent without bash:
+   .\.venv\Scripts\fairseq-train.exe corpus-bin --save-dir transformer\mymodel ^
+     --arch transformer --layernorm-embedding ^
+     --task translation_multi_simple_epoch ^
+     --sampling-method temperature --sampling-temperature 1.5 ^
+     --encoder-langtok tgt --lang-dict lang_list.txt ^
+     --lang-pairs en-mr ^
+     --decoder-normalize-before --encoder-normalize-before ^
+     --activation-fn gelu --adam-betas "(0.9, 0.98)" --batch-size 1024 ^
+     --decoder-attention-heads 4 --decoder-embed-dim 256 --decoder-ffn-embed-dim 1024 --decoder-layers 6 ^
+     --dropout 0.5 ^
+     --encoder-attention-heads 4 --encoder-embed-dim 256 --encoder-ffn-embed-dim 1024 --encoder-layers 6 ^
+     --lr 0.001 --lr-scheduler inverse_sqrt --max-epoch 51 ^
+     --optimizer adam --num-workers 4 --warmup-init-lr 0 --warmup-updates 4000
+(Remove the "^" and put it on one line; --num-workers 4 is safer on Windows.)
+
+>>> TO TRAIN THE MARATHI->ROMAN MODEL (your direction) instead, change:
+     --source-lang mr --target-lang en          (swap the pair)
+     --encoder-langtok src                       (source token, not target)
+     --lang-pairs mr-en                          (Marathi only) or all X-en
+   and binarize with --source-lang mr --target-lang en, --srcdict dict.mr.txt,
+   --tgtdict dict.en.txt. Everything else (arch, lr, epochs) stays the same.
+
+Output:  transformer\mymodel\checkpoint_best.pt   (the trained model)
+         plus checkpoint_last.pt, checkpoint<epoch>.pt, etc.
+
+---------------------------------------------------------- E5. GENERATE + EVAL
+Generate predictions on the test set
+(model_training_scripts\generation\generate.sh, en->Indic):
+   CUDA_VISIBLE_DEVICES=0 fairseq-generate corpus-bin \
+     --path transformer/mymodel/checkpoint_best.pt \
+     --task translation_multi_simple_epoch --gen-subset test \
+     --beam 4 --nbest 4 \
+     --source-lang en --target-lang mr --batch-size 4096 \
+     --encoder-langtok "tgt" --lang-dict lang_list.txt --num-workers 64 \
+     --lang-pairs en-mr > output/en_mr.txt
+(For Marathi->Roman: --source-lang mr --target-lang en --encoder-langtok src
+ --lang-pairs mr-en, output mr_en.txt.)
+
+Convert + score (model_training_scripts\evaluate\):
+   python generation\generate_result_files.py mr          # -> XML result files
+   evaluate\final_result_without_rescoring.sh mr          # -> accuracy CSV/matrix
+This prints Top-1 accuracy and a per-word correct/wrong breakdown.
+
+Then point inference at your new checkpoint:
+   - CLI: copy it to models\indic-en\transformer\indicxlit.pt (back up the old one)
+   - Page: edit translit_page.py  CHECKPOINT = r"...\your_new_checkpoint.pt"
+   - or pass --path <your checkpoint> to fairseq-interactive.
+
+
+================================================================================
+ PART F - FINETUNE ON YOUR OWN MARATHI DATA  (recommended for most users)
+================================================================================
+If you already have Marathi/Roman word pairs (e.g. your geographical-name list)
+and just want to adapt the existing model, FINETUNE instead of training from
+scratch. It is much faster and needs far less data.
+
+Steps (from the upstream README "Finetuning model on your input dataset"):
+
+1. Prepare data as in E1 (train_mr.mr/.en, valid_mr.mr/.en, test_mr.mr/.en),
+   char-space-separated, one word per line.
+
+2. You already have the pretrained checkpoint + dictionaries
+   (models\indic-en\transformer\indicxlit.pt and corpus-bin\dict.*.txt).
+   Binarize your data with the EXISTING joint dictionaries:
+      fairseq-preprocess \
+        --trainpref corpus/train_mr --validpref corpus/valid_mr --testpref corpus/test_mr \
+        --srcdict models/indic-en/corpus-bin/dict.mr.txt \
+        --tgtdict models/indic-en/corpus-bin/dict.en.txt \
+        --source-lang mr --target-lang en \
+        --destdir corpus-bin
+
+3. Finetune (Marathi->Roman). Key differences from training from scratch:
+   --restore-file  : start from the pretrained checkpoint
+   --reset-*       : discard the old optimizer/scheduler/meters/dataloader
+   --lr            : use a SMALL learning rate (e.g. 3e-5) for finetuning
+   --keep-last-epochs 5 --patience 5
+
+      CUDA_VISIBLE_DEVICES=0 fairseq-train corpus-bin \
+        --save-dir transformer/mymodel_ft \
+        --arch transformer --layernorm-embedding \
+        --task translation_multi_simple_epoch \
+        --sampling-method "temperature" --sampling-temperature 1.5 \
+        --encoder-langtok "src" --lang-dict lang_list.txt --lang-pairs mr-en \
+        --decoder-normalize-before --encoder-normalize-before \
+        --activation-fn gelu --adam-betas "(0.9, 0.98)" --batch-size 1024 \
+        --decoder-attention-heads 4 --decoder-embed-dim 256 --decoder-ffn-embed-dim 1024 --decoder-layers 6 \
+        --dropout 0.5 \
+        --encoder-attention-heads 4 --encoder-embed-dim 256 --encoder-ffn-embed-dim 1024 --encoder-layers 6 \
+        --lr 3e-5 --lr-scheduler inverse_sqrt --max-epoch 51 \
+        --optimizer adam --num-workers 32 \
+        --warmup-init-lr 0 --warmup-updates 4000 \
+        --keep-last-epochs 5 --patience 5 \
+        --restore-file models/indic-en/transformer/indicxlit.pt \
+        --reset-lr-scheduler --reset-meters --reset-dataloader --reset-optimizer
+
+   (For Roman->Marathi finetuning instead: --source-lang en --target-lang mr,
+    --encoder-langtok tgt, --lang-pairs en-mr, srcdict dict.en.txt / tgtdict
+    dict.mr.txt, and --restore-file models/en-indic/transformer/indicxlit.pt.)
+
+4. Generate + evaluate as in E5, then use the new checkpoint_best.pt.
+
+
+================================================================================
+ PART G - IMPORTANT FIXES AND CAVEATS
+================================================================================
+
+G1. encoder-langtok must match the direction (this was a real bug; now fixed).
+    - Roman->Marathi (en->indic):  --encoder-langtok tgt   (prepend TARGET lang)
+    - Marathi->Roman (indic->en):  --encoder-langtok src   (prepend SOURCE lang)
+    The repo's inference\cli\en-indic\interactive.sh uses tgt (correct).
+    The repo's inference\cli\indic-en\interactive.sh uses src (correct).
+    marathi_beam_search.py previously used "tgt" for BOTH directions; it is now
+    fixed to use "src" for marathi-to-roman and "tgt" for roman-to-marathi.
+    translit_page.py prepends "__mr__" manually (equivalent to src), correct.
+
+G2. Use the project venv, not system Python 3.13. System Python has no fairseq
+    and is too new for fairseq 0.12.2. Always use:
+       e:\indicxlict\.venv\Scripts\python.exe
+
+G3. GPU torch. The shipped venv has CPU torch. To use the GPU, install
+    torch==2.0.1+cu118 (see Part B). The model then runs on CUDA automatically.
+    nvidia-smi cannot confirm GPU usage on this Windows box; trust
+    next(model.parameters()).is_cuda == True instead.
+
+G4. Beam width is fixed at model-load time (Fairseq design). The web page loads
+    a model per beam width on first use and caches it; Top-N is chosen per
+    request. The CLI loads fresh each call (~14s) so prefer the page for many
+    queries.
+
+G5. The model outputs lowercase roman. The CSV ground truth is capitalized.
+    Transliteration is correct; case is not modeled (training data is
+    lowercase). Capitalize the first letter yourself if needed.
+
+G6. Sentence vs word input. The CLI (marathi_beam_search.py) and the raw
+    fairseq-interactive treat each whitespace token separately. The web page
+    (translit_page.py) reassembles words in place, so it handles sentences and
+    multi-word names correctly, preserving spaces and punctuation.
+
+G7. Rescoring dictionaries (optional, ~850 MB) are NOT included. They improve
+    candidate ranking but the model works fine without them. The page and the
+    CLI do not use rescoring.
+
+
+================================================================================
+ PART H - FINETUNING RUN: RESULTS (November 2026)
+================================================================================
+
+Training data   : subodh_trial_csv.csv (Marathi village/district geographical names)
+                  34,194 raw pairs → 44,051 clean pairs after filtering
+                  (dropped 4,518 abbreviations like "Bk.", "Kh." and 1,304 token
+                   mismatches; kept only pure Devanagari ↔ pure alphabetic pairs)
+Split by villageCode (no data leakage):
+  train  : 35,288 pairs  (30,960 villages)
+  valid  :  4,372 pairs  ( 3,870 villages)
+  test   :  4,391 pairs  ( 3,871 villages)
+
+Model           : IndicXlit transformer (11M params), finetuned from
+                  models\indic-en\transformer\indicxlit_original.pt  (backed up)
+Direction       : Marathi (Devanagari) → Roman  (mr-en)
+Checkpoint saved: transformer\finetune_mr\checkpoint_best.pt
+                  ALSO copied to models\indic-en\transformer\indicxlit.pt
+                  (the page and CLI automatically use this new checkpoint)
+
+Training config:
+  --lr 3e-5  --lr-scheduler inverse_sqrt  --warmup-updates 500
+  --max-tokens 4096  (small batch for 4 GB GPU)
+  --max-epoch 10  --patience 3  --dropout 0.5
+  --restore-file <original>  --reset-lr-scheduler --reset-meters
+                              --reset-dataloader --reset-optimizer
+  Windows patches applied:
+    fairseq/data/data_utils.py  : cast indices to int64 (int32 bug on Windows)
+    fairseq/file_io.py          : os.rename → os.replace  (WinError 183 on Windows)
+
+Training log (validation loss per epoch):
+  Epoch  1 : loss 0.278  ppl 1.21
+  Epoch  2 : loss 0.238  ppl 1.18
+  Epoch  3 : loss 0.200  ppl 1.15
+  Epoch  4 : loss 0.172  ppl 1.13
+  Epoch  5 : loss 0.153  ppl 1.11
+  Epoch  6 : loss 0.137  ppl 1.10
+  Epoch  7 : loss 0.129  ppl 1.09
+  Epoch  8 : loss 0.127  ppl 1.09
+  Epoch  9 : loss 0.124  ppl 1.09
+  Epoch 10 : loss 0.123  ppl 1.09  ← best (saved)
+  Total training time: 232.8 seconds (~4 minutes) on RTX 3050 4 GB
+
+Evaluation on test set (4,391 word pairs):
+  Metric                   Original    Finetuned    Improvement
+  ─────────────────────────────────────────────────────────────
+  Top-1 Exact Match (%)      68.07       82.62       +14.55 pp
+  Avg CER (%)                 8.99        3.47        -5.52 pp
+  Avg WER (%)                31.93       17.38       -14.55 pp
+  Inference time (5-beam)   143.7s       30.1s         ~4.8×
+
+Sample predictions (finetuned model):
+  Marathi        Reference        Predicted       Match
+  ─────────────────────────────────────────────────────
+  सोनाळे        sonale           sonale            Y
+  निघवी         nighavi          nighavi           Y
+  घेराकेळंजा    gherakelanja     gherakelanja      Y
+  पाचनवडगाव     pachanwadgaon    pachanwadgaon     Y
+  बिलाखेड       bilakhed         bilakhed          Y
+  डोलवी         dolvi            dolvi             Y
+  बागवाडी       bagwadi          bagwadi           Y
+  गुंजखेडा      gunjkheda        gunjkheda         Y
+  कात वडी       katvadi          katwadi           N (CER 14.3%)
+  धामणी         dhamni           dhamani           N (CER 16.7%)
+
+To RESTORE the original checkpoint:
+  copy models\indic-en\transformer\indicxlit_original.pt
+       models\indic-en\transformer\indicxlit.pt
+  (then restart the page server)
+
+To train MORE epochs from the finetuned checkpoint (continuing):
+  Run the same fairseq-train command but set:
+    --restore-file transformer\finetune_mr\checkpoint_best.pt
+    --max-epoch 20   (or however many more you want)
+  Remove the --reset-* flags so it continues from where it stopped.
+
+================================================================================
+ QUICK REFERENCE
+================================================================================
+Run the web page:
+    .\.venv\Scripts\python.exe -u .\translit_page.py
+    -> open http://127.0.0.1:8080
+
+Run the CLI (Marathi -> Roman):
+    .\.venv\Scripts\python.exe -u .\marathi_beam_search.py "आडगाव रावेर" ^
+        --direction marathi-to-roman --beam 5 --nbest 3
+
+Check environment:
+    .\.venv\Scripts\python.exe -c "import torch,fairseq;print(torch.__version__,torch.cuda.is_available(),fairseq.__version__)"
+
+Train from scratch (bash, GPU):
+    cd model_training_scripts\training && bash train.sh 0
+    (edit train.sh: save-dir, lang-pairs, encoder-langtok, source/target for your direction)
+
+Finetune (bash, GPU): see Part F.
+
+Your Marathi->Roman checkpoint: models\indic-en\transformer\indicxlit.pt
+Your Roman->Marathi checkpoint:   models\en-indic\transformer\indicxlit.pt
+================================================================================
